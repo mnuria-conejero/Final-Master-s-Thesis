@@ -1,8 +1,4 @@
-%Tiene en cuenta para bound/pob.inicial:
-%Bounds de [-10,10] para rgb
-%r-g=0 (r=g aprox diferencia de 3)
-%r+g+b=0
-%r y g > b
+
 
 
 %Objective function
