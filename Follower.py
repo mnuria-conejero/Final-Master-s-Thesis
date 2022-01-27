@@ -49,7 +49,7 @@ stop_threshold=1.64
 #Angular Velocity stablished for turning
 aV=0.25
 
-#Tolerance for the turning angle (rad-5º)
+#Tolerance for the turning angle (rad-5 degrees)
 angle_tolerance=0.09
 
 #Proportional gain for velocity
@@ -246,12 +246,14 @@ def callback(color_data,depth_data,anchor_data,odom_data):
     #Get anchor distance
     distance_to_anchor=anchorPose.pose.position.z
 
+    print(distance_to_operator,distance_to_anchor)
+
     #We create the velocity publisher
     nav_pub = rospy.Publisher("/robot/move_base/cmd_vel", Twist, queue_size=10)
 
     #When no operator is detected by camera-STOP
     if distance_to_operator==None:
-        print('NO OPERATOR DETECTED BY CAMERA')
+        print('NO OPERATOR DETECTED BY CAMERA-STOP')
         #Stop movement
         #Check movements in simulation
         #stop_cmd=stoppingRobot()
@@ -261,7 +263,7 @@ def callback(color_data,depth_data,anchor_data,odom_data):
     elif abs(distance_to_operator-distance_to_anchor)<difference_threshold:
         #If operator close - STOP
         if distance_to_operator <= stop_threshold:
-            print('OPERATOR CLOSE')
+            print('OPERATOR CLOSE-STOP')
             #Stop movement
             #Check movements in simulation
             #stop_cmd=stoppingRobot()
@@ -271,8 +273,7 @@ def callback(color_data,depth_data,anchor_data,odom_data):
         else:
             print('Sending Movement command-Moving robot to Pose')
 
-            #Get orientation from operator
-            theta_sensor=anchorPose.pose.orientation.z
+            
             
             #Get theta_odom from the robot Odometry
             orientation = current_odometry.pose.pose.orientation
@@ -280,6 +281,9 @@ def callback(color_data,depth_data,anchor_data,odom_data):
             euler = tf.transformations.euler_from_quaternion(orientation_list)
             #When there is no velocity in y axis
             theta_odom = euler[2]
+
+            #Get orientation from operator
+            theta_sensor= theta_odom + anchorPose.pose.orientation.z
 
             print("Theta_sensor: ",theta_sensor," Theta_odom",theta_odom)
 
@@ -289,10 +293,17 @@ def callback(color_data,depth_data,anchor_data,odom_data):
             if (theta_odom < theta_sensor-angle_tolerance) or (theta_odom > theta_sensor+angle_tolerance):
                 robotVel.linear.x = 0.0
                 robotVel.angular.z = angularVelocity(theta_sensor,theta_odom,aV)
+
+                #Only for checking
+                if robotVel.angular.z>0:
+                    print("Turning left")
+                else:
+                    print("Turning right")
             #When orientation is OK move forward with velocity increasing proportional to the distance
             else:
                 robotVel.linear.x = kp*(distance_to_operator-robot_measure)
                 robotVel.angular.z = 0
+                print("Moving forward")
 
 
 
@@ -304,7 +315,7 @@ def callback(color_data,depth_data,anchor_data,odom_data):
     
     #When operator detected by camera does not match with UWB-STOP
     else:
-        print('OPERATOR DETECTED BY CAMERA IS NOT OKAY')
+        print('OPERATOR DETECTED BY CAMERA IS NOT OKAY-STOP')
         #Stop movement
         #stop_cmd=stoppingRobot()
         #nav_pub.publish(stop_cmd)
@@ -334,9 +345,8 @@ def listener():
     anchor_orientation=message_filters.Subscriber('/dwm1001/orientation/to/anchor/', PoseStamped)
     odom=message_filters.Subscriber('/robot/robotnik_base_control/odom', Odometry)
     
-    
 
-    ts = message_filters.TimeSynchronizer([im_color_subs,im_depth_subs,anchor_orientation,odom], 10)
+    ts = message_filters.ApproximateTimeSynchronizer([im_color_subs,im_depth_subs,anchor_orientation,odom],10,0.1,allow_headerless=False)
     ts.registerCallback(callback)
 
     # spin() simply keeps python from exiting until this node is stopped
