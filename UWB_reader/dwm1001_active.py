@@ -3,12 +3,12 @@
     For more info on the documentation go to https://www.decawave.com/sites/default/files/dwm1001-api-guide.pdf
 """
 
-from statistics import median
-from tkinter import Y
-from turtle import distance, right
+
+
+import serial
 import rospy, time, os, sys, random
 import serial.tools.list_ports as ports
-import serial
+
 import numpy as np
 import math
 
@@ -19,49 +19,8 @@ from std_msgs.msg       import Float64
 
 #python2
 
-#from dwm1001_apiCommands import DWM1001_API_COMMANDS
+from dwm1001_apiCommands import DWM1001_API_COMMANDS
 
-#python3
-class DWM1001_API_COMMANDS:
-        DOUBLE_ENTER    = b'\r\r'   # ASCII char for double Enter
-        SINGLE_ENTER    = b'\r'     # ASCII char for single Enter
-        HELP            = b'?'      # Display help
-        QUIT            = b'quit'   # Quit API shell mode
-        GC              = b'gc'     # Clears GPIO pin
-        GG              = b'gg'     # Reads GPIO pin level
-        GS              = b'gs'     # Sets GPIO as output and sets its value
-        GT              = b'gt'     # Toggle GPIO(must be an output)
-        F               = b'f'      # Show free memory on the heap
-        PS              = b'ps'     # Show info about running threads
-        PMS             = b'pms'    # Show power managements tasks. IDL means that task is idle. USE means that task is allocated in the power management
-        RESET           = b'reset'  # reset the dev board
-        UT              = b'ut'     # Show device uptime
-        FRST            = b'frst'   # Factory reset
-        TWI             = b'twi'    # General purpose I2C/TWI read
-        AID             = b'aid'    # Read ACC device ID
-        AV              = b'av'     # Rad ACC values
-        LES             = b'les'    # Show distances to ranging anchors and the position if location engine is enabled
-        LEC             = b'lec'    # Show measurement and position in CSV format
-        LEP             = b'lep'    # Show position in CSV format.Sending this command multiple times will turn on/off this functionality.
-        SI              = b'si'     # System Info
-        NMG             = b'nmg'    # Get node mode info
-        NMO             = b'nmo'    # Enable passive offline option and resets the node
-        NMP             = b'nmp'    # Enable active offline option and resets the node.
-        NMA             = b'nma'    # Configures node to as anchor, active and reset the node.
-        NMI             = b'nmi'    # Configures node to as anchor initiator, active and reset the node.
-        NMT             = b'nmt'    # Configures node to as tag, active and reset the node
-        NMTL            = b'nmtl'   # Configures node to as tag, active, low power and resets the node.
-        BPC             = b'bpc'    # Toggle UWB bandwidth / tx power compensation.
-        LA              = b'la'     # Show anchor list
-        STG             = b'stg'    # Display statistics
-        STC             = b'stc'    # Clears statistics
-        TLV             = b'tlv'    # Parses given tlv frame, see section 4 for valid TLV commands
-        AURS            = b'aurs'   # Set position update rate. See section 4.3.3 for more detail.
-        AURG            = b'aurg'   # Get position update rate. See section 4.3.4 for more details
-        APG             = b'apg'    # Get position of the node.See section 3.4.2 for more detail
-        APS             = b'aps'    # Set position of the node.See section 3.4.2for more detail
-        ACAS            = b'acas'   # Configures node as anchor with given options
-        ACTS            = b'acts'   # Configures node as tag with given options
 
 class dwm1001_localizer:
 
@@ -105,7 +64,7 @@ class dwm1001_localizer:
         self.median_left = []
         self.median_right= []
         #Distance between Tags
-        self.distance_bt_tags=0.69 #m
+        self.distance_bt_tags=0.545 #m
         self.distance_to_middle=0.368  #m
         
         # Set a ROS rate
@@ -246,7 +205,7 @@ class dwm1001_localizer:
                     self.topics["Anchor pose"] = rospy.Publisher(
                         '/dwm1001/orientation/to/anchor/' ,
                         PoseStamped, 
-                        queue_size=100
+                        queue_size=10
                     )
 
                 
@@ -264,19 +223,26 @@ class dwm1001_localizer:
                     self.median_counter=self.median_counter+1
 
 
+
                     if self.median_counter==self.median_measurements:
+
 
                         #Get average measurement
                         average_measure_izq=sum(self.median_left)/len(self.median_left)
                         average_measure_dech=sum(self.median_right)/len(self.median_right)
 
+                        print(average_measure_izq,average_measure_dech)
+
                         #Set counter to 0 and clean array
                         self.median_counter=0
-                        self.median_left.clear()
-                        self.median_right.clear()
+                        self.median_left=[]
+                        self.median_right=[]
+                        
 
+                       
                         #Compute and publish
                         x,y,theta,dist_r=self.calculate_RobotPose(average_measure_izq,average_measure_dech,self.distance_bt_tags,self.distance_to_middle)
+                       
                         p = PoseStamped()
                         p.header.stamp = rospy.Time.now()  
                         p.pose.position.x = x               #m
@@ -286,7 +252,14 @@ class dwm1001_localizer:
                         p.pose.orientation.y = 0.0
                         p.pose.orientation.z = theta
                         p.pose.orientation.w = 0.0       #rad
+
                         self.topics["Anchor pose"].publish(p)
+
+                        
+                       
+
+                       
+                       
                         
                     else: 
                         continue
@@ -297,7 +270,6 @@ class dwm1001_localizer:
     
 
     def calculate_RobotPose(self,d1_izq,d2_dech,d_bt_tags,d_to_middle):
-        print(d1_izq,d2_dech)
         #Check if Q1 or Q2
         if d1_izq >= d2_dech:
 
@@ -332,9 +304,9 @@ class dwm1001_localizer:
         y=ya
 
         #Theta axis
-            #0º: front 
-            #90º: left
-            #-90º: right
+            #0 degrees: front 
+            #90 degrees: left
+            #-90 degrees: right
         theta=robot_theta
         dist_t=dr
     
