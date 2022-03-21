@@ -16,6 +16,10 @@ from geometry_msgs.msg  import Pose
 from geometry_msgs.msg  import PoseStamped
 from geometry_msgs.msg import Quaternion
 from std_msgs.msg       import Float64
+from filterpy.kalman import KalmanFilter
+from filterpy.common import Q_discrete_white_noise
+from scipy import signal 
+
 
 #python2
 
@@ -58,14 +62,34 @@ class dwm1001_localizer:
 
         #Initiate the counter for the median filter and the number of nmeasurements
         self.median_counter=0
-        self.median_measurements=4
+        self.median_measurements=5
 
         #Initiate the median array
         self.median_left = []
         self.median_right= []
         #Distance between Tags
-        self.distance_bt_tags=0.545 #m
-        self.distance_to_middle=0.368  #m
+        self.distance_bt_tags=0.47 #m
+        self.distance_to_middle=0.308  #m
+
+
+        ''' #Kalman Filter parameters
+        self.f = KalmanFilter (dim_x=2, dim_z=2)
+        self.f.x = np.array([0., 0.])
+        self.f.F = np.array([[1.,0.],[0.,1.]])
+        #Medicion del sensor
+        self.f.H = np.array([[1.,0.],[0.,1.]])
+        #Matriz de covarianza (identidad de las dimensiones * uncertainty)
+        self.f.P = np.array([[250.,    0.],[   0., 250.] ])
+        #Ruido sensor--estaba en 0.1 y 0.13
+        self.f.R = np.array([[5.,0.],[0.,5.]])
+        self.f.Q = Q_discrete_white_noise(dim=2, dt=1., var=1.)'''
+
+
+        #Low pass filter-order
+        self.order = 2
+        self.cut = 0.5
+        self.b_filter, self.a_filter = signal.butter(self.order, self.cut, 'lowpass')
+        
         
         # Set a ROS rate
         self.rate = rospy.Rate(1)
@@ -113,6 +137,8 @@ class dwm1001_localizer:
             rospy.loginfo("Ports opened: "+ str(self.serialPortDWM1001_Tag_Izq.name) + " and " + str(self.serialPortDWM1001_Tag_Dech.name))
             # start sending commands to the board so we can initialize the board
             self.initializeDWM1001API()
+
+
             # give some time to DWM1001 to wake up
             time.sleep(2)
             # send command lec, so we can get positions is CSV format
@@ -210,12 +236,13 @@ class dwm1001_localizer:
 
                 
                 #Main loop for obtaining the robot pose and distance to person
-                    #First we filter the measurements and take the average measuraments every 4 iterations
+                    #First we filter the measurements and take the average measuraments every 10 iterations
                     #Then we compute the data and publish
                 try :
                     dist_izq = float(arrayData_izq[7+6*i])
                     dist_dech = float(arrayData_dech[7+6*i])
                     print("Dist_izq: ",dist_izq," | Dist_dech: ",dist_dech)
+
 
                     #Add measurements to the arrays
                     self.median_left.append(dist_izq)
@@ -227,22 +254,33 @@ class dwm1001_localizer:
                     if self.median_counter==self.median_measurements:
 
 
-                        #Get average measurement
-                        average_measure_izq=sum(self.median_left)/len(self.median_left)
-                        average_measure_dech=sum(self.median_right)/len(self.median_right)
-
-                        print(average_measure_izq,average_measure_dech)
-
-                        #Set counter to 0 and clean array
-                        self.median_counter=0
-                        self.median_left=[]
-                        self.median_right=[]
                         
 
+                        print(self.median_left,self.median_right)
+
+                        #Estimation of distance with lowpass_filter
+                        
+                        filtered_measure_izq = signal.filtfilt(self.b_filter, self.a_filter, [self.median_left],padlen=self.median_measurements-1)
+                        filtered_measure_dech = signal.filtfilt(self.b_filter, self.a_filter, [self.median_right],padlen=self.median_measurements-1)
+
+                        print("Filtered: ",filtered_measure_izq,filtered_measure_dech)
+
+                        #Get average from filtered measurements
+                        average_measure_izq=np.sum(filtered_measure_izq)/self.median_measurements
+                        average_measure_dech=np.sum(filtered_measure_dech)/self.median_measurements
+
+                        print("Average",average_measure_izq,average_measure_dech)
+                        
+
+                        '''#Estimation of the distances by means of the Kalman Filter
+                        average_measure_izq,average_measure_dech=self.kalmanPrediction(average_measure_izq,average_measure_dech)
+
+                        print("Kalman: ",average_measure_izq,average_measure_dech)'''
                        
                         #Compute and publish
                         x,y,theta,dist_r=self.calculate_RobotPose(average_measure_izq,average_measure_dech,self.distance_bt_tags,self.distance_to_middle)
-                       
+                        
+                        
                         p = PoseStamped()
                         p.header.stamp = rospy.Time.now()  
                         p.pose.position.x = x               #m
@@ -255,47 +293,73 @@ class dwm1001_localizer:
 
                         self.topics["Anchor pose"].publish(p)
 
-                        
-                       
+
+                        #print("Position: ",x,y)
+                        #print("Angle_beforeKalman: ",theta_pre)
+                        print("Angle: ",theta*57.29578)
+                        print("dist: ",dist_r)
+
+                        #Set counter to 0 and clean array
+                        self.median_counter=0
+                        self.median_left=[]
+                        self.median_right=[]
 
                        
-                       
-                        
                     else: 
                         continue
 
                 except :
                     pass
 
-    
+    '''def kalmanPrediction(self,measure_izq,measure_dech):
+        z = np.array([measure_izq, measure_dech])
+        self.f.predict()
+        self.f.update(z)
+        predicted_izq=self.f.x[0]
+        predicted_dech=self.f.x[1]
+        return predicted_izq,predicted_dech'''
 
     def calculate_RobotPose(self,d1_izq,d2_dech,d_bt_tags,d_to_middle):
         #Check if Q1 or Q2
         if d1_izq >= d2_dech:
-
             #Q1
-
-            theta1=math.acos((d1_izq**2 + d_bt_tags**2 - d2_dech**2)/(2*d1_izq*d_bt_tags))
-            #theta2=math.pi-math.acos((d2_dech**2 + d_bt_tags**2 - d1_izq**2)/(2*d2_dech*d_bt_tags))
-            xa=d1_izq*math.sin(theta1)-d_to_middle
-            ya=-1*(d1_izq*math.cos(theta1)-(d_bt_tags/2))
-            thetar=math.atan(abs(xa)/abs(ya))
-            robot_theta=-1*((math.pi/2)-thetar)
-            #Calculate the distance from the back of the robot, not the middle 
-            #This is in order to compare it with the camera distance
-            dr=math.sqrt((xa+self.distance_to_middle)**2+ya**2)
+            try:
+                theta1=math.acos((d1_izq**2 + d_bt_tags**2 - d2_dech**2)/(2*d1_izq*d_bt_tags))
+                #theta2=math.pi-math.acos((d2_dech**2 + d_bt_tags**2 - d1_izq**2)/(2*d2_dech*d_bt_tags))
+                xa=d1_izq*math.sin(theta1)-d_to_middle
+                ya=-1*(d1_izq*math.cos(theta1)-(d_bt_tags/2))
+                thetar=math.atan(abs(xa)/abs(ya))
+                robot_theta=-1*((math.pi/2)-thetar)
+                #Calculate the distance from the back of the robot, not the middle 
+                #This is in order to compare it with the camera distance
+                dr=math.sqrt((xa+self.distance_to_middle)**2+ya**2)
+            except ValueError:
+                theta1=0.0
+                xa=0.0
+                ya=0.0
+                thetar=0.0
+                robot_theta=0.0
+                dr=0.0
 
         else:              
-
+            print("Q2")
             #Q2
+            try:
+                theta1=math.acos((d1_izq**2 + d_bt_tags**2 - d2_dech**2)/(2*d1_izq*d_bt_tags))
+                #theta2=math.pi-math.acos((d2_dech**2 + d_bt_tags**2 - d1_izq**2)/(2*d2_dech*d_bt_tags))
+                xa=d1_izq*math.sin(math.pi-theta1)-d_to_middle
+                ya=d1_izq*math.cos(math.pi-theta1)+(d_bt_tags/2)
+                thetar=math.pi-math.atan(abs(xa)/abs(ya))
+                robot_theta=thetar-(math.pi/2)
+                dr=math.sqrt((xa+self.distance_to_middle)**2+ya**2)
+            except ValueError:
+                theta1=0.0
+                xa=0.0
+                ya=0.0
+                thetar=0.0
+                robot_theta=0.0
+                dr=0.0
 
-            theta1=math.acos((d1_izq**2 + d_bt_tags**2 - d2_dech**2)/(2*d1_izq*d_bt_tags))
-            #theta2=math.pi-math.acos((d2_dech**2 + d_bt_tags**2 - d1_izq**2)/(2*d2_dech*d_bt_tags))
-            xa=d1_izq*math.sin(math.pi-theta1)-d_to_middle
-            ya=d1_izq*math.cos(math.pi-theta1)+(d_bt_tags/2)
-            thetar=math.pi-math.atan(abs(xa)/abs(ya))
-            robot_theta=thetar-(math.pi/2)
-            dr=math.sqrt((xa+self.distance_to_middle)**2+ya**2)
 
         #Coordinates axis:
             #x positive: vertical forward
@@ -309,8 +373,15 @@ class dwm1001_localizer:
             #-90 degrees: right
         theta=robot_theta
         dist_t=dr
-    
+
         return x,y,theta,dist_t
+
+ 
+
+        
+
+
+
                 
     def initializeDWM1001API(self):
         """
