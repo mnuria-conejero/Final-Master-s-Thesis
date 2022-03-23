@@ -1,0 +1,7 @@
+<launch>
+<node name="dwm1001_active" pkg="follower_distinguir" type="dwm1001_active.py" output="screen"/>
+
+<include file="$(find realsense2_camera)/launch/rs_camera.launch">
+    <arg name="align_depth" value="true" />
+</include>
+</launch>
