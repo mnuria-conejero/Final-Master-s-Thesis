@@ -5,9 +5,12 @@
 
 
 
+import os
+from statistics import mode
 import serial
 import rospy, time, os, sys, random
 import serial.tools.list_ports as ports
+import csv
 
 import numpy as np
 import math
@@ -16,14 +19,20 @@ from geometry_msgs.msg  import Pose
 from geometry_msgs.msg  import PoseStamped
 from geometry_msgs.msg import Quaternion
 from std_msgs.msg       import Float64
-from filterpy.kalman import KalmanFilter
-from filterpy.common import Q_discrete_white_noise
 from scipy import signal 
+
+
+from KalmanFilter import KalmanFilter as kf
+from Helpers_KF import initConstVelocityKF 
+
+from numpy.linalg import multi_dot
+from numpy.linalg import inv   # pinv may be more generic 
 
 
 #python2
 
 from dwm1001_apiCommands import DWM1001_API_COMMANDS
+
 
 
 class dwm1001_localizer:
@@ -72,20 +81,13 @@ class dwm1001_localizer:
         self.distance_to_middle=0.308  #m
 
 
-        ''' #Kalman Filter parameters
-        self.f = KalmanFilter (dim_x=2, dim_z=2)
-        self.f.x = np.array([0., 0.])
-        self.f.F = np.array([[1.,0.],[0.,1.]])
-        #Medicion del sensor
-        self.f.H = np.array([[1.,0.],[0.,1.]])
-        #Matriz de covarianza (identidad de las dimensiones * uncertainty)
-        self.f.P = np.array([[250.,    0.],[   0., 250.] ])
-        #Ruido sensor--estaba en 0.1 y 0.13
-        self.f.R = np.array([[5.,0.],[0.,5.]])
-        self.f.Q = Q_discrete_white_noise(dim=2, dt=1., var=1.)'''
+    
 
 
         #Low pass filter-order
+        #Otros que funcionan bien
+            #2-0.3 mas angulo menos distancia
+            #3-0.5 se va mucho algun angulo
         self.order = 2
         self.cut = 0.5
         self.b_filter, self.a_filter = signal.butter(self.order, self.cut, 'lowpass')
@@ -96,6 +98,9 @@ class dwm1001_localizer:
         
         # Empty dictionary to store topics being published
         self.topics = {}
+
+        #Empty list for tags of Kalman filter
+        self.kalman_list= []
         
         # Serial port  Tag Izq settings
         self.serialPortDWM1001_Tag_Izq= serial.Serial(
@@ -114,6 +119,13 @@ class dwm1001_localizer:
             stopbits = serial.STOPBITS_TWO,
             bytesize = serial.SEVENBITS
         )
+
+        self.current_path=os.path.dirname(__file__)
+
+        #CSV files
+        with open(self.current_path+'/Kalman_data.csv',mode='w') as self.kalman_data:
+            self.kalman_data_writer=csv.writer(self.kalman_data,delimiter=',',quotechar='"',quoting=csv.QUOTE_MINIMAL)
+            self.kalman_data_writer.writerow(["X", "X_Kalman","Y","Y_Kalman","Theta","Theta_Kalman","Dist", "Dist_Kalman"])
     
 
     def main(self) :
@@ -198,6 +210,7 @@ class dwm1001_localizer:
                 rospy.loginfo("succesfully closed ")
                 self.serialPortDWM1001_Tag_Izq.close()
                 self.serialPortDWM1001_Tag_Dech.close()
+              
 
 
     def publishTagPositions(self, serialData_izq, serialData_dech):
@@ -271,33 +284,72 @@ class dwm1001_localizer:
 
                         print("Average",average_measure_izq,average_measure_dech)
                         
-
-                        '''#Estimation of the distances by means of the Kalman Filter
-                        average_measure_izq,average_measure_dech=self.kalmanPrediction(average_measure_izq,average_measure_dech)
-
-                        print("Kalman: ",average_measure_izq,average_measure_dech)'''
                        
                         #Compute and publish
                         x,y,theta,dist_r=self.calculate_RobotPose(average_measure_izq,average_measure_dech,self.distance_bt_tags,self.distance_to_middle)
+                        print("Before Kalman","x: ",x, "y: ",y, "theta: ",theta, "dist: ",dist_r)
                         
+                        #Kalman filter for x,y,pose
+                        t_pose_x = x
+                        t_pose_y = y
+                        t_pose_z = theta
+
+                        # To use this raw pose of DWM1001 as a measurement data in KF
+                        anchor_id = int(0)  
+                        anchor_macID = str(anchor_id)
+                        t_pose_list = [t_pose_x, t_pose_y, t_pose_z]
+                        t_pose_xyz = np.array(t_pose_list)
+                        t_pose_xyz.shape = (len(t_pose_xyz), 1)    # force to be a column vector 
+
+                        if anchor_macID not in self.kalman_list:  
+                            self.kalman_list.append(anchor_macID)
+                            # Suppose constant velocity motion model is used (x,y,z and velocities in 3D)
+                            A = np.zeros((6,6))
+                            H = np.zeros((3, 6))  # measurement (x,y,z without velocities) 
+
+                            self.kalman_list[anchor_id] = kf(A, H, anchor_macID) # create KF object for tag id
+                
+
+                        if self.kalman_list[anchor_id].isKalmanInitialized == False:  
+                            # Initialize the Kalman by asigning required parameters
+                            # This should be done only once for each tags
+                            A, B, H, Q, R, P_0, x_0  = initConstVelocityKF() # for const velocity model
+                            
+                            self.kalman_list[anchor_id].assignSystemParameters(A, B, H, Q, R, P_0, x_0)  # [anchor_id]
+                            self.kalman_list[anchor_id].isKalmanInitialized = True                            
+                                                   
+                   
+                        self.kalman_list[anchor_id].performKalmanFilter(t_pose_xyz, 0)  
+                        t_pose_vel_kf = self.kalman_list[anchor_id].x_m  # state vector contains both pose and velocities data
+                        t_pose_kf = t_pose_vel_kf[0:3]  # extract only position data (x,y,z)
+                        xk=float(t_pose_kf[0])
+                        yk=float(t_pose_kf[1])
+                        thetak,dist_rk=self.calculate_KalmanPose(average_measure_izq,average_measure_dech,xk,yk,self.distance_to_middle)
+
+                        print("Kalman pose: ","x: ",xk, "y: ",yk, "theta: ",thetak, "dist: ",dist_rk)
                         
+                        with open(self.current_path+'/Kalman_data.csv',mode='a') as self.kalman_data_act:
+                            self.kalman_data_writer_act=csv.writer(self.kalman_data_act,delimiter=',',quotechar='"',quoting=csv.QUOTE_MINIMAL)
+                            self.kalman_data_writer_act.writerow([x,xk,y,yk,theta,thetak,dist_r,dist_rk])
+
                         p = PoseStamped()
                         p.header.stamp = rospy.Time.now()  
-                        p.pose.position.x = x               #m
-                        p.pose.position.y = y               #m
-                        p.pose.position.z = dist_r            #m
+                        p.pose.position.x = xk               #m
+                        p.pose.position.y = yk               #m
+                        p.pose.position.z = dist_rk            #m
                         p.pose.orientation.x = 0.0
                         p.pose.orientation.y = 0.0
-                        p.pose.orientation.z = theta
+                        p.pose.orientation.z = thetak
                         p.pose.orientation.w = 0.0       #rad
 
                         self.topics["Anchor pose"].publish(p)
 
 
-                        #print("Position: ",x,y)
-                        #print("Angle_beforeKalman: ",theta_pre)
-                        print("Angle: ",theta*57.29578)
-                        print("dist: ",dist_r)
+                        
+
+
+                        #print("Angle: ",theta*57.29578)
+                        #print("dist: ",dist_r)
 
                         #Set counter to 0 and clean array
                         self.median_counter=0
@@ -308,16 +360,52 @@ class dwm1001_localizer:
                     else: 
                         continue
 
-                except :
+                except:
                     pass
 
-    '''def kalmanPrediction(self,measure_izq,measure_dech):
-        z = np.array([measure_izq, measure_dech])
-        self.f.predict()
-        self.f.update(z)
-        predicted_izq=self.f.x[0]
-        predicted_dech=self.f.x[1]
-        return predicted_izq,predicted_dech'''
+ 
+    def calculate_KalmanPose(self,d1_izq,d2_dech,xk,yk,d_to_middle):
+        #Check if Q1 or Q2
+        if d1_izq >= d2_dech:
+            #Q1
+            try:
+                thetar=math.atan(abs(xk)/abs(yk))
+                robot_theta=-1*((math.pi/2)-thetar)
+                #Calculate the distance from the back of the robot, not the middle 
+                #This is in order to compare it with the camera distance
+                dr=math.sqrt((xk+d_to_middle)**2+yk**2)
+            except ValueError:
+                theta1=0.0
+                xa=0.0
+                ya=0.0
+                thetar=0.0
+                robot_theta=0.0
+                dr=0.0
+
+        else:              
+            #Q2
+            try:
+                thetar=math.pi-math.atan(abs(xk)/abs(yk))
+                robot_theta=thetar-(math.pi/2)
+                dr=math.sqrt((xk+d_to_middle)**2+yk**2)
+            except ValueError:
+                theta1=0.0
+                xa=0.0
+                ya=0.0
+                thetar=0.0
+                robot_theta=0.0
+                dr=0.0
+
+
+
+        #Theta axis
+            #0 degrees: front 
+            #90 degrees: left
+            #-90 degrees: right
+        theta=robot_theta
+        dist_t=dr
+
+        return theta,dist_t
 
     def calculate_RobotPose(self,d1_izq,d2_dech,d_bt_tags,d_to_middle):
         #Check if Q1 or Q2
