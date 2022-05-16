@@ -31,11 +31,11 @@ robot_measure=1.04
     #Future threshold:1.54
 
 #Threshold in order to stop the robot when the operator is close (m)
-stop_threshold=1.55
+stop_threshold=1.65
 
 
 #Tolerance for the turning angle (rad-10 degrees)
-angle_tolerance=0.15
+angle_tolerance=0.18
 
 #Proportional gain for velocity
 kp=0.5
@@ -48,9 +48,9 @@ def angularModule(pose):
     #Funciona bien
     #0.5 y #0.7
     if orientation<=(math.pi/2)/3:
-        aV=0.6
+        aV=0.5
     else:
-        aV=0.7
+        aV=0.6
     return aV
 
 #Function for obtaining angular velocity in order to make the turn needed
@@ -125,7 +125,7 @@ def talker():
             robotVel_angular= 0.0
         #When operator detected by camera matches with UWB
         elif abs(distance_to_operator-distance_to_anchor)<difference_threshold:
-            if abs(distance_to_operator-distance_to_anchor)>0.3:
+            if abs(distance_to_operator-distance_to_anchor)>0.5:
                 distance_to_operator=distance_to_anchor
             else:
                 distance_to_operator=distance_to_operator
