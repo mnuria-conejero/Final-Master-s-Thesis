@@ -46,8 +46,8 @@ class dwm1001_localizer:
         rospy.init_node('DWM1001_Active_{}'.format(random.randint(0,100000)), anonymous=False)
 
         # Get port and tag name
-        serial_number_izq='000760096513'
-        serial_number_dech='000760096423'
+        serial_number_izq='000760166765'
+        serial_number_dech='000760166760'
         pts=ports.comports()
         try:
 
